@@ -4,8 +4,8 @@
 module.exports = aa;
 aa.callback = callback;
 
-const GenProto = function *() {} ().constructor;
-const GenFunc = function *() {}.constructor;
+var GenProto = function *() {} ().constructor;
+var GenFunc = function *() {}.constructor;
 
 function callback(gfn) {
 	return function() {
@@ -13,85 +13,106 @@ function callback(gfn) {
 	};
 }
 
-function cbvalue(cb) {
-	return (err, val) =>
-		err ? cb(err) :
-		valuecb(val, cb);
+function valuethunk(cb) {
+	return function (err, val) {
+		if (err) cb(err); else valuecb(val, cb);
+	};
 }
 
 function valuecb(val, cb) {
+	// falsy value: null, undefined, '', 0, -0, NaN, ...
 	if (!val) return cb(null, val);
+
+	// generator, generator function
 	if (val.constructor !== Function && (
 		val.constructor === GenFunc ||
 		val.constructor === GenProto &&
-		typeof val.next === 'function')) val = gtor2thunk(val);
-	if (val.constructor === Array) {
-		if (val.some(x => x && (typeof x === 'function' ||
+		typeof val.next === 'function'))
+			val = gtor2thunk(val);
+
+	// pure array
+	else if (val.constructor === Array) {
+		if (val.some(function (x) {
+				return x && (typeof x === 'function' ||
 				typeof x.then === 'function' ||
 				x.constructor === GenProto &&
-				typeof x.next === 'function')))
+				typeof x.next === 'function'); }))
 			val = array2thunk(val);
 	}
-	if (val.constructor === Object) {
-		const keys = Object.keys(val);
-		if (keys.some(x => val[x] && (typeof val[x] === 'function' ||
+
+	// pure object
+	else if (val.constructor === Object) {
+		var keys = Object.keys(val);
+		if (keys.some(function (x) {
+				return val[x] && (typeof val[x] === 'function' ||
 				typeof val[x].then === 'function' ||
 				val[x].constructor === GenProto &&
-				typeof val[x].next === 'function')))
+				typeof val[x].next === 'function'); }))
 			val = object2thunk(val);
 	}
-	if (typeof val === 'function') return val(cbvalue(cb));
-	if (typeof val.then === 'function')
-		return val.then(val => valuecb(val, cb), cb);
-	cb(null, val);
+
+	// function, thunk
+	if (typeof val === 'function')
+		val(valuethunk(cb));
+
+	// promise, thenable
+	else if (typeof val.then === 'function')
+		val.then(function (val) { valuecb(val, cb); }, cb);
+
+	// other
+	else cb(null, val);
 }
 
 function array2thunk(arr) {
-	return cb => {
-		let n = arr.length;
+	return function (cb) {
+		var n = arr.length;
 		if (n === 0) return cb(null, arr);
-		const res = new Array(arr.length);
-		arr.forEach((val, i) => {
-			const x = (err, val) =>
-				err ? ((n > 0 && cb(err)), (n = 0)) :
-				((res[i] = val), (--n || valuecb(res, cb)));
+		var res = new Array(n);
+		arr.forEach(function (val, i) {
 			valuecb(val, x);
+			function x(err, val) {
+				if (err) n > 0 && cb(err), n = 0;
+				else res[i] = val, (--n || valuecb(res, cb)); };
 		});
 	};
 }
 
 function object2thunk(obj) {
-	return cb => {
-		const keys = Object.keys(obj);
-		let n = keys.length;
+	return function (cb) {
+		var keys = Object.keys(obj), n = keys.length;
 		if (n === 0) return cb(null, obj);
-		const res = keys.reduce((a, b) => (a[b] = void 0, a), {});
-		keys.forEach(key => {
-			let val = obj[key];
-			const x = (err, val) =>
-				err ? ((n > 0 && cb(err)), (n = 0)) :
-				((res[key] = val), (--n || valuecb(res, cb)));
-			valuecb(val, x);
+		var res = keys.reduce(function (a, b) { return a[b] = undefined, a; }, {});
+		keys.forEach(function (key) {
+			valuecb(obj[key], x);
+			function x(err, val) {
+				if (err) n > 0 && cb(err), n = 0;
+				else res[key] = val, (--n || valuecb(res, cb)); };
 		});
 	};
 }
 
-function aa(gen) {
-	if (typeof gen === 'function') gen = gen();
-	return new Promise((res, rej) => function x(err, val) {
-		try { var obj = err ? gen.throw(err) : gen.next(val); }
-		catch (e) { return rej(e); }
-		if (val = obj.value, obj.done) return res(val);
-		valuecb(val, x);
-	} ());
-}
-
+// generators to thunk
 function gtor2thunk(gen) {
 	if (typeof gen === 'function') gen = gen();
-	return cb => function x(err, val) {
-		try { var obj = err ? gen.throw(err) : gen.next(val); }
-		catch (e) { if (cb) return cb(e); console.error(e); throw e; }
-		if (val = obj.value, obj.done) return cb && valuecb(val, cb);
-		valuecb(val, x);
-	} ();
+	return function (cb) {
+		void function x(err, val) {
+			try { var obj = err ? gen.throw(err) : gen.next(val); }
+			catch (e) { if (cb) return cb(e); console.error(e); throw e; }
+			if (val = obj.value, obj.done) cb && valuecb(val, cb);
+			else valuecb(val, x);
+		} ();
+	};
+}
+
+// generators to promise
+function aa(gen) {
+	if (typeof gen === 'function') gen = gen();
+	return new Promise(function (res, rej) {
+		void function x(err, val) {
+			try { var obj = err ? gen.throw(err) : gen.next(val); }
+			catch (e) { return rej(e); }
+			if (val = obj.value, obj.done) res(val);
+			else valuecb(val, x);
+		} ();
+	});
 }
